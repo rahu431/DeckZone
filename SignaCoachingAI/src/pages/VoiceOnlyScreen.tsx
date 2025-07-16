@@ -36,6 +36,8 @@ const VoiceOnlyScreen: React.FC = () => {
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
   const [showPromptPopup, setShowPromptPopup] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState<string>('');
+  const [isCorrectingInput, setIsCorrectingInput] = useState(false);
+  const [correctionTranscript, setCorrectionTranscript] = useState<string>('');
 
   const speechService = SpeechRecognitionService.getInstance();
   const geminiService = GeminiService.getInstance();
@@ -163,6 +165,102 @@ const VoiceOnlyScreen: React.FC = () => {
       console.error('Failed to start voice input:', error);
       setIsListening(false);
       setError('Failed to start voice input. Please check your microphone permissions.');
+    }
+  };
+
+  const handleInputCorrection = async () => {
+    if (isCorrectingInput) {
+      // Stop correction
+      speechService.stopListening();
+      setIsCorrectingInput(false);
+      setCorrectionTranscript('');
+      return;
+    }
+
+    if (!speechService.isSupported()) {
+      setError('Voice input not supported in this browser');
+      return;
+    }
+
+    try {
+      setIsCorrectingInput(true);
+      setError(null);
+      setCorrectionTranscript('');
+      
+      const languageCode = SpeechRecognitionService.getLanguageCode(selectedLanguage);
+      
+      await speechService.startListening(
+        async (result) => {
+          if (!result.isFinal) {
+            setCorrectionTranscript(result.transcript);
+            return;
+          }
+
+          const transcript = result.transcript.trim();
+          if (!transcript) {
+            setCorrectionTranscript('');
+            return;
+          }
+
+          console.log('Input correction received:', transcript);
+          setIsCorrectingInput(false);
+          setCorrectionTranscript('');
+          setIsProcessing(true);
+
+          try {
+            // Reprocess with corrected input
+            const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
+            const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
+            setCurrentPrompt(correctionPrompt);
+            
+            const result = await geminiService.modelInstance.generateContent(prompt);
+            const response = await result.response;
+            const responseText = response.text();
+            
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+              throw new Error('Invalid response format');
+            }
+
+            const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
+            setVoiceResponse(aiResponse);
+            
+            // Automatically speak the professional version
+            try {
+              setIsSpeaking(true);
+              setCurrentlyPlaying('professional');
+              await voiceService.speak(aiResponse.toneVariations.professional.text, 'en-US');
+            } catch (voiceError) {
+              console.log('Voice playback error (non-fatal):', voiceError);
+            } finally {
+              setIsSpeaking(false);
+              setCurrentlyPlaying(null);
+            }
+          } catch (error) {
+            console.error('Input correction processing error:', error);
+            setError('Error processing corrected input. Please try again.');
+          } finally {
+            setIsProcessing(false);
+          }
+        },
+        (error) => {
+          console.error('Input correction voice error:', error);
+          setIsCorrectingInput(false);
+          setCorrectionTranscript('');
+          setError('Voice correction error. Please try again.');
+        },
+        {
+          language: languageCode,
+          continuous: true,
+          interimResults: true,
+          maxAlternatives: 1,
+        }
+      );
+    } catch (error) {
+      console.error('Failed to start input correction:', error);
+      setIsCorrectingInput(false);
+      setCorrectionTranscript('');
+      setError('Failed to start correction. Please check your microphone permissions.');
     }
   };
 
@@ -306,14 +404,42 @@ const VoiceOnlyScreen: React.FC = () => {
                   <div className="w-2 h-2 bg-yellow-400 rounded-full mr-2"></div>
                   <h4 className="font-semibold text-yellow-800">Cross-Check Translation</h4>
                 </div>
-                <p className="text-sm text-gray-700 mb-2">
-                  <span className="font-medium">What AI understood:</span>
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm text-gray-700">
+                    <span className="font-medium">What AI understood:</span>
+                  </p>
+                  
+                  {/* Correction Microphone */}
+                  <button
+                    onClick={handleInputCorrection}
+                    disabled={isProcessing}
+                    className={cn(
+                      "p-2 rounded-full transition-colors",
+                      isCorrectingInput ? "bg-red-500 hover:bg-red-600 text-white animate-pulse" : "bg-yellow-500 hover:bg-yellow-600 text-white",
+                      isProcessing && "opacity-50 cursor-not-allowed"
+                    )}
+                    title={isCorrectingInput ? "Stop correction" : "Correct what AI understood"}
+                  >
+                    <Mic className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                {/* Show correction transcript while listening */}
+                {isCorrectingInput && correctionTranscript && (
+                  <div className="mb-2 p-2 bg-yellow-50 border border-yellow-300 rounded text-sm">
+                    <span className="text-yellow-700">Correcting: </span>
+                    <span className="text-yellow-800 font-medium">{correctionTranscript}</span>
+                  </div>
+                )}
+                
                 <p className="text-gray-900 text-sm italic bg-white p-3 rounded border">
                   "{voiceResponse.translatedMeaning}"
                 </p>
                 <p className="text-xs text-yellow-700 mt-2">
                   ✓ Verify this matches your intended meaning in {voiceResponse.sourceLanguage}
+                  {!isCorrectingInput && (
+                    <span className="ml-2">• Click 🎤 to correct AI understanding</span>
+                  )}
                 </p>
               </div>
             )}
