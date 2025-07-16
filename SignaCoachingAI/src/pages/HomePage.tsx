@@ -49,16 +49,18 @@ const HomePage: React.FC = () => {
           </p>
           
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Link to="/voice">
+            <Link to="/">
               <Button className="bg-green-500 hover:bg-green-600 text-white px-8 py-3 text-lg">
                 <Mic className="w-5 h-5 mr-2" />
                 Voice-Only Mode
               </Button>
             </Link>
+            <Link to="/text">
             <Button variant="outline" className="px-8 py-3 text-lg">
               <MessageSquare className="w-5 h-5 mr-2" />
               Text Mode
             </Button>
+            </Link>
           </div>
         </div>
 

@@ -9,8 +9,8 @@ function App() {
     <Router>
       <div className="App">
         <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/voice" element={<VoiceOnlyScreen />} />
+          <Route path="/text" element={<HomePage />} />
+          <Route path="/" element={<VoiceOnlyScreen />} />
         </Routes>
       </div>
     </Router>
