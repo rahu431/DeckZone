@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, Info, X } from 'lucide-react';
 import { SpeechRecognitionService, SpeechRecognitionResult } from '@/services/speechRecognitionService';
 import { GeminiService } from '@/services/geminiService';
 import { VoicePromptManager } from '@/services/voicePromptManager';
+import { PromptManager } from '@/services/promptManager';
 import { VoiceService } from '@/services/voiceService';
 import { cn } from '@/utils/cn';
 
@@ -14,6 +15,7 @@ interface ToneVariation {
 interface VoiceResponse {
   originalText: string;
   sourceLanguage: string;
+  translatedMeaning: string; // Added for cross-check translation
   toneVariations: {
     professional: ToneVariation;
     friendly: ToneVariation;
@@ -31,10 +33,13 @@ const VoiceOnlyScreen: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState<string>('en');
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
+  const [showPromptPopup, setShowPromptPopup] = useState(false);
+  const [currentPrompt, setCurrentPrompt] = useState<string>('');
 
   const speechService = SpeechRecognitionService.getInstance();
   const geminiService = GeminiService.getInstance();
   const voicePromptManager = VoicePromptManager.getInstance();
+  const promptManager = PromptManager.getInstance();
   const voiceService = VoiceService.getInstance();
 
   // Language options for dropdown
@@ -77,51 +82,67 @@ const VoiceOnlyScreen: React.FC = () => {
       
       await speechService.startListening(
         async (result: SpeechRecognitionResult) => {
-          if (result.isFinal) {
-            const transcript = result.transcript.trim();
-            if (!transcript) return;
+          // Show interim results but only process final results
+          if (!result.isFinal) {
+            console.log('Interim result:', result.transcript);
+            return;
+          }
 
-            console.log('Voice input received:', transcript);
-            console.log('Selected language:', selectedLanguage);
+          const transcript = result.transcript.trim();
+          if (!transcript) {
+            console.log('Empty transcript, ignoring');
+            return;
+          }
 
-            setIsListening(false);
-            setIsProcessing(true);
+          console.log('Final voice input received:', transcript);
+          console.log('Selected language:', selectedLanguage);
 
+          setIsListening(false);
+          setIsProcessing(true);
+
+          try {
+            // Process with AI to get all three tone variations
+            if (!geminiService.isConfigured()) {
+              throw new Error('Gemini AI not configured');
+            }
+
+            const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
+            // Store the correction prompt for the popup (the one user selected)
+            const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
+            setCurrentPrompt(correctionPrompt);
+            
+            const result = await geminiService.modelInstance.generateContent(prompt);
+            const response = await result.response;
+            const responseText = response.text();
+            
+            console.log('Gemini AI response:', responseText);
+
+            // Parse the JSON response
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+              throw new Error('Invalid response format');
+            }
+
+            const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
+            setVoiceResponse(aiResponse);
+            
+            // Automatically speak the professional version
             try {
-              // Process with AI to get all three tone variations
-              if (!geminiService.isConfigured()) {
-                throw new Error('Gemini AI not configured');
-              }
-
-              const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
-              
-              const result = await geminiService.modelInstance.generateContent(prompt);
-              const response = await result.response;
-              const responseText = response.text();
-              
-              console.log('Gemini AI response:', responseText);
-
-              // Parse the JSON response
-              const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-              if (!jsonMatch) {
-                throw new Error('Invalid response format');
-              }
-
-              const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
-              setVoiceResponse(aiResponse);
-              
-              // Automatically speak the professional version
               setIsSpeaking(true);
               setCurrentlyPlaying('professional');
               await voiceService.speak(aiResponse.toneVariations.professional.text, 'en-US');
+            } catch (voiceError) {
+              console.log('Voice playback error (non-fatal):', voiceError);
+              // Don't show error to user for voice issues
+            } finally {
               setIsSpeaking(false);
               setCurrentlyPlaying(null);
-            } catch (error) {
-              console.error('Processing error:', error);
-              setError('Error processing your speech. Please try again.');
-            } finally {
-              setIsProcessing(false);
             }
+          } catch (error) {
+            console.error('Processing error:', error);
+            setError('Error processing your speech. Please try again.');
+          } finally {
+            setIsProcessing(false);
           }
         },
         (error: string) => {
@@ -132,8 +153,8 @@ const VoiceOnlyScreen: React.FC = () => {
         },
         {
           language: languageCode,
-          continuous: false,
-          interimResults: false,
+          continuous: true,
+          interimResults: true,
           maxAlternatives: 1,
         }
       );
@@ -162,10 +183,10 @@ const VoiceOnlyScreen: React.FC = () => {
       setIsSpeaking(true);
       setCurrentlyPlaying(toneType);
       await voiceService.speak(voiceResponse.toneVariations[toneType].text, 'en-US');
-      setIsSpeaking(false);
-      setCurrentlyPlaying(null);
     } catch (error) {
-      console.error('Voice playback error:', error);
+      console.log('Voice playback error (non-fatal):', error);
+      // Don't show error to user for voice issues
+    } finally {
       setIsSpeaking(false);
       setCurrentlyPlaying(null);
     }
@@ -174,11 +195,26 @@ const VoiceOnlyScreen: React.FC = () => {
   return (
     <div className="fixed inset-0 bg-gradient-to-br from-primary-50 to-secondary-50 flex flex-col items-center justify-center p-8 overflow-hidden">
       {/* Header */}
-      <div className="absolute top-8 left-8 right-8 flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-800">Voice Coach</h1>
+      <div className="absolute top-8 left-8 right-8 flex justify-between items-center z-10">
+        <div className="flex items-center space-x-4 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1">
+          <h1 className="text-2xl font-bold text-gray-800">Voice Coach</h1>
+          
+          {/* AI Prompt Info Button */}
+          <button
+            onClick={() => setShowPromptPopup(true)}
+            disabled={!currentPrompt}
+            className={cn(
+              "p-2 rounded-full transition-colors",
+              currentPrompt ? "bg-blue-500 hover:bg-blue-600 text-white" : "bg-gray-300 text-gray-500 cursor-not-allowed"
+            )}
+            title="View AI Agent Prompt"
+          >
+            <Info className="w-5 h-5" />
+          </button>
+        </div>
         
         {/* Language Selector */}
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-3 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1">
           <label className="text-sm font-medium text-gray-700">Input Language:</label>
           <select
             value={selectedLanguage}
@@ -258,6 +294,25 @@ const VoiceOnlyScreen: React.FC = () => {
                 From {voiceResponse.sourceLanguage} → Professional English
               </p>
             </div>
+
+            {/* Translation Cross-Check */}
+            {voiceResponse.translatedMeaning && voiceResponse.sourceLanguage !== 'English' && (
+              <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <div className="flex items-center mb-2">
+                  <div className="w-2 h-2 bg-yellow-400 rounded-full mr-2"></div>
+                  <h4 className="font-semibold text-yellow-800">Cross-Check Translation</h4>
+                </div>
+                <p className="text-sm text-gray-700 mb-2">
+                  <span className="font-medium">What AI understood:</span>
+                </p>
+                <p className="text-gray-900 text-sm italic bg-white p-3 rounded border">
+                  "{voiceResponse.translatedMeaning}"
+                </p>
+                <p className="text-xs text-yellow-700 mt-2">
+                  ✓ Verify this matches your intended meaning in {voiceResponse.sourceLanguage}
+                </p>
+              </div>
+            )}
 
             {/* Three Tone Variations */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
@@ -370,6 +425,56 @@ const VoiceOnlyScreen: React.FC = () => {
           <p>Select your input language above, then speak naturally</p>
         )}
       </div>
+
+      {/* AI Prompt Popup */}
+      {showPromptPopup && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[80vh] overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h2 className="text-xl font-bold text-gray-800">AI Agent Prompt</h2>
+              <button
+                onClick={() => setShowPromptPopup(false)}
+                className="p-2 rounded-full hover:bg-gray-100 transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="p-6 overflow-y-auto max-h-[60vh]">
+              <div className="mb-4">
+                <p className="text-sm text-gray-600 mb-4">
+                  This is the exact prompt used to instruct the AI agent for processing your speech:
+                </p>
+              </div>
+              
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                <pre className="text-sm text-gray-800 whitespace-pre-wrap font-mono leading-relaxed">
+                  {currentPrompt}
+                </pre>
+              </div>
+              
+              <div className="mt-4 text-xs text-gray-500">
+                <p>
+                  💡 This prompt guides the AI to provide professional English corrections in three different tones:
+                  Professional, Friendly, and Direct.
+                </p>
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="flex justify-end p-6 border-t border-gray-200">
+              <button
+                onClick={() => setShowPromptPopup(false)}
+                className="px-6 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

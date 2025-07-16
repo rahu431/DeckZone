@@ -44,6 +44,7 @@ Provide your response in this EXACT JSON format:
 {
   "originalText": "${text}",
   "sourceLanguage": "${sourceLanguage}",
+  "translatedMeaning": "Translation of the corrected English back to ${sourceLanguage} for cross-verification",
   "toneVariations": {
     "professional": {
       "text": "Formal, businesslike version suitable for client meetings and official communications",
@@ -69,6 +70,7 @@ GUIDELINES:
 4. Focus on practical improvements for technical professionals
 5. Consider scenarios like client calls, team meetings, and urgent communications
 6. Be supportive and encouraging in explanations
+7. IMPORTANT: For translatedMeaning, translate the professional tone suggestion back to the original language (${sourceLanguage}) so the user can verify the meaning is correct
 
 EXAMPLES:
 

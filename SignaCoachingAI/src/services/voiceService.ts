@@ -25,6 +25,9 @@ export class VoiceService {
 
       // Stop any current speech
       this.stop();
+      
+      // Small delay to avoid conflicts with speech recognition
+      setTimeout(() => {
 
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = language;
@@ -37,9 +40,16 @@ export class VoiceService {
       };
 
       utterance.onerror = (event) => {
-        reject(new Error(`Speech synthesis error: ${event.error}`));
+        // Don't treat interruption as a fatal error
+        if (event.error === 'interrupted' || event.error === 'canceled') {
+          console.log('Speech synthesis interrupted or canceled');
+          resolve(); // Resolve instead of reject for interruptions
+        } else {
+          reject(new Error(`Speech synthesis error: ${event.error}`));
+        }
       };
       this.synthesis.speak(utterance);
+      }, 200); // 200ms delay
     });
   }
 

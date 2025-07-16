@@ -16,6 +16,12 @@ export class SpeechRecognitionService {
   private recognition: any | null = null;
   private isListening: boolean = false;
   private currentLanguage: string = 'en-US';
+  private timeoutId: NodeJS.Timeout | null = null;
+  private silenceTimeoutId: NodeJS.Timeout | null = null;
+  private readonly LISTENING_TIMEOUT = 30000; // 30 seconds timeout
+  private readonly SILENCE_TIMEOUT = 5000; // 5 seconds of silence before stopping
+  private lastTranscript: string = '';
+  private silenceDetected: boolean = false;
 
   constructor() {
     this.initializeRecognition();
@@ -38,7 +44,7 @@ export class SpeechRecognitionService {
     }
 
     this.recognition = new SpeechRecognition();
-    this.recognition.continuous = false;
+    this.recognition.continuous = true; // Enable continuous listening
     this.recognition.interimResults = true;
     this.recognition.lang = this.currentLanguage;
     this.recognition.maxAlternatives = 1;
@@ -61,6 +67,22 @@ export class SpeechRecognitionService {
     if (this.isListening) {
       this.stopListening();
     }
+
+    // Clear any existing timeouts and reset state
+    if (this.timeoutId) {
+      clearTimeout(this.timeoutId);
+      this.timeoutId = null;
+    }
+    if (this.silenceTimeoutId) {
+      clearTimeout(this.silenceTimeoutId);
+      this.silenceTimeoutId = null;
+    }
+    this.lastTranscript = '';
+    this.silenceDetected = false;
+
+    // Store callbacks for use in event handlers
+    const resultCallback = onResult;
+    const errorCallback = onError;
 
     // Apply configuration
     if (config) {
@@ -89,6 +111,14 @@ export class SpeechRecognitionService {
       this.recognition.onstart = () => {
         this.isListening = true;
         console.log('Speech recognition started for language:', this.currentLanguage);
+        
+        // Set up timeout to automatically stop listening
+        this.timeoutId = setTimeout(() => {
+          console.log('Speech recognition timeout reached');
+          this.stopListening();
+          onError('Listening timeout - please try again');
+        }, this.LISTENING_TIMEOUT);
+        
         resolve();
       };
 
@@ -99,15 +129,56 @@ export class SpeechRecognitionService {
 
         console.log('Speech recognition result:', { transcript, confidence, isFinal: result.isFinal });
 
-        onResult({
+        // Check if we have new content
+        if (transcript.trim() !== this.lastTranscript.trim()) {
+          this.lastTranscript = transcript;
+          this.silenceDetected = false;
+          
+          // Clear silence timeout since we have new speech
+          if (this.silenceTimeoutId) {
+            clearTimeout(this.silenceTimeoutId);
+            this.silenceTimeoutId = null;
+          }
+        }
+
+        // Always send interim results
+        resultCallback({
           transcript,
           confidence,
           isFinal: result.isFinal,
         });
+
+        // If it's a final result, start silence detection
+        if (result.isFinal && transcript.trim()) {
+          console.log('Final result received, starting silence detection');
+          this.silenceTimeoutId = setTimeout(() => {
+            console.log('Silence timeout reached, stopping recognition');
+            this.silenceDetected = true;
+            this.stopListening();
+            
+            // Send final result
+            resultCallback({
+              transcript: this.lastTranscript,
+              confidence: confidence || 0.8,
+              isFinal: true,
+            });
+          }, this.SILENCE_TIMEOUT);
+        }
       };
 
       this.recognition.onerror = (event: any) => {
         this.isListening = false;
+        
+        // Clear timeouts on error
+        if (this.timeoutId) {
+          clearTimeout(this.timeoutId);
+          this.timeoutId = null;
+        }
+        if (this.silenceTimeoutId) {
+          clearTimeout(this.silenceTimeoutId);
+          this.silenceTimeoutId = null;
+        }
+        
         console.error('Speech recognition error:', event.error);
         
         let errorMessage = `Speech recognition error: ${event.error}`;
@@ -115,8 +186,9 @@ export class SpeechRecognitionService {
         // Provide more helpful error messages
         switch (event.error) {
           case 'no-speech':
-            errorMessage = 'No speech detected. Please try again.';
-            break;
+            // Don't treat no-speech as an error for continuous recognition
+            console.log('No speech detected, continuing to listen...');
+            return; // Don't call error callback
           case 'audio-capture':
             errorMessage = 'Microphone not available. Please check your microphone.';
             break;
@@ -129,17 +201,53 @@ export class SpeechRecognitionService {
           case 'language-not-supported':
             errorMessage = `Language ${this.currentLanguage} not supported. Try switching to English.`;
             break;
+          case 'aborted':
+            // Don't treat aborted as an error - user likely stopped intentionally
+            console.log('Speech recognition aborted');
+            return; // Don't call error callback
           default:
             errorMessage = `Speech recognition error: ${event.error}`;
         }
         
-        onError(errorMessage);
+        errorCallback(errorMessage);
         reject(event.error);
       };
 
       this.recognition.onend = () => {
-        this.isListening = false;
-        console.log('Speech recognition ended');
+        console.log('Speech recognition ended naturally');
+        
+        // Only process if we haven't already detected silence
+        if (this.isListening && !this.silenceDetected && this.lastTranscript.trim()) {
+          console.log('Recognition ended with content, restarting...');
+          // Try to restart recognition to maintain continuous listening
+          try {
+            this.recognition.start();
+          } catch (error) {
+            console.log('Could not restart recognition, ending session');
+            this.isListening = false;
+            
+            // Send final result if we have content
+            if (this.lastTranscript.trim()) {
+              resultCallback({
+                transcript: this.lastTranscript,
+                confidence: 0.8,
+                isFinal: true,
+              });
+            }
+          }
+        } else {
+          this.isListening = false;
+        }
+        
+        // Clear timeouts when recognition ends
+        if (this.timeoutId) {
+          clearTimeout(this.timeoutId);
+          this.timeoutId = null;
+        }
+        if (this.silenceTimeoutId) {
+          clearTimeout(this.silenceTimeoutId);
+          this.silenceTimeoutId = null;
+        }
       };
 
       try {
@@ -158,6 +266,16 @@ export class SpeechRecognitionService {
     if (this.recognition && this.isListening) {
       this.recognition.stop();
       this.isListening = false;
+    }
+    
+    // Clear timeouts when manually stopping
+    if (this.timeoutId) {
+      clearTimeout(this.timeoutId);
+      this.timeoutId = null;
+    }
+    if (this.silenceTimeoutId) {
+      clearTimeout(this.silenceTimeoutId);
+      this.silenceTimeoutId = null;
     }
   }
 
