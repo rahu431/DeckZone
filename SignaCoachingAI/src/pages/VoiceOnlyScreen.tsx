@@ -286,7 +286,10 @@ const VoiceOnlyScreen: React.FC = () => {
 
         {/* Voice Response */}
         {voiceResponse && (
-          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-4xl w-full">
+          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-4xl w-full max-h-[70vh] overflow-y-auto" style={{
+            scrollbarWidth: 'thin',
+            scrollbarColor: '#d1d5db #f3f4f6'
+          }}>
             {/* Header */}
             <div className="mb-6 text-center">
               <h3 className="text-xl font-bold text-gray-800 mb-2">Communication Options</h3>
