@@ -10,6 +10,7 @@ import { cn } from '@/utils/cn';
 interface ToneVariation {
   text: string;
   explanation: string;
+  translation: string; // Translation back to input language
 }
 
 interface VoiceResponse {
@@ -343,6 +344,19 @@ const VoiceOnlyScreen: React.FC = () => {
                 <p className="text-gray-900 text-sm leading-relaxed mb-3">
                   {voiceResponse.toneVariations.professional.text}
                 </p>
+                
+                {/* Translation in Input Language */}
+                {voiceResponse.toneVariations.professional.translation && voiceResponse.sourceLanguage !== 'English' && (
+                  <div className="mb-3 p-2 bg-blue-100 rounded border-l-4 border-blue-400">
+                    <p className="text-xs text-blue-700 font-medium mb-1">
+                      {voiceResponse.sourceLanguage} Translation:
+                    </p>
+                    <p className="text-sm text-blue-800 italic">
+                      "{voiceResponse.toneVariations.professional.translation}"
+                    </p>
+                  </div>
+                )}
+                
                 <p className="text-xs text-blue-600">
                   {voiceResponse.toneVariations.professional.explanation}
                 </p>
@@ -371,6 +385,19 @@ const VoiceOnlyScreen: React.FC = () => {
                 <p className="text-gray-900 text-sm leading-relaxed mb-3">
                   {voiceResponse.toneVariations.friendly.text}
                 </p>
+                
+                {/* Translation in Input Language */}
+                {voiceResponse.toneVariations.friendly.translation && voiceResponse.sourceLanguage !== 'English' && (
+                  <div className="mb-3 p-2 bg-green-100 rounded border-l-4 border-green-400">
+                    <p className="text-xs text-green-700 font-medium mb-1">
+                      {voiceResponse.sourceLanguage} Translation:
+                    </p>
+                    <p className="text-sm text-green-800 italic">
+                      "{voiceResponse.toneVariations.friendly.translation}"
+                    </p>
+                  </div>
+                )}
+                
                 <p className="text-xs text-green-600">
                   {voiceResponse.toneVariations.friendly.explanation}
                 </p>
@@ -399,6 +426,19 @@ const VoiceOnlyScreen: React.FC = () => {
                 <p className="text-gray-900 text-sm leading-relaxed mb-3">
                   {voiceResponse.toneVariations.direct.text}
                 </p>
+                
+                {/* Translation in Input Language */}
+                {voiceResponse.toneVariations.direct.translation && voiceResponse.sourceLanguage !== 'English' && (
+                  <div className="mb-3 p-2 bg-orange-100 rounded border-l-4 border-orange-400">
+                    <p className="text-xs text-orange-700 font-medium mb-1">
+                      {voiceResponse.sourceLanguage} Translation:
+                    </p>
+                    <p className="text-sm text-orange-800 italic">
+                      "{voiceResponse.toneVariations.direct.translation}"
+                    </p>
+                  </div>
+                )}
+                
                 <p className="text-xs text-orange-600">
                   {voiceResponse.toneVariations.direct.explanation}
                 </p>
