@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, Info, X } from 'lucide-react';
 import { SpeechRecognitionService, SpeechRecognitionResult } from '@/services/speechRecognitionService';
 import { GeminiService } from '@/services/geminiService';
@@ -37,12 +37,58 @@ const VoiceOnlyScreen: React.FC = () => {
   const [showPromptPopup, setShowPromptPopup] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState<string>('');
   const [isCorrectingInput, setIsCorrectingInput] = useState(false);
+  const [recordingTimer, setRecordingTimer] = useState<number>(0);
+  const [timerInterval, setTimerInterval] = useState<NodeJS.Timeout | null>(null);
+  const [maxRecordingTime] = useState<number>(60); // 60 seconds maximum listening time
 
   const speechService = SpeechRecognitionService.getInstance();
   const geminiService = GeminiService.getInstance();
   const voicePromptManager = VoicePromptManager.getInstance();
   const promptManager = PromptManager.getInstance();
   const voiceService = VoiceService.getInstance();
+
+  // Cleanup effect
+  useEffect(() => {
+    return () => {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+      }
+    };
+  }, [timerInterval]);
+
+  // Timer management functions
+  const startRecordingTimer = () => {
+    setRecordingTimer(0);
+    const interval = setInterval(() => {
+      setRecordingTimer(prev => {
+        if (prev >= maxRecordingTime) {
+          // Maximum time reached, stop recording
+          stopRecordingTimer();
+          speechService.stopListening();
+          setIsListening(false);
+          setIsCorrectingInput(false);
+          setError('Recording time limit reached. Please try again.');
+          return prev;
+        }
+        return prev + 1;
+      });
+    }, 1000);
+    setTimerInterval(interval);
+  };
+
+  const stopRecordingTimer = () => {
+    if (timerInterval) {
+      clearInterval(timerInterval);
+      setTimerInterval(null);
+    }
+    setRecordingTimer(0);
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   // Language options for dropdown
   const languageOptions = [
@@ -61,6 +107,7 @@ const VoiceOnlyScreen: React.FC = () => {
       setVoiceResponse(null);
       setError(null);
       setIsSpeaking(false);
+      stopRecordingTimer();
       return;
     }
 
@@ -77,11 +124,12 @@ const VoiceOnlyScreen: React.FC = () => {
 
     try {
       setIsListening(true);
-      
+      startRecordingTimer();
+
       // Get language code for speech recognition
       const languageCode = SpeechRecognitionService.getLanguageCode(selectedLanguage);
       console.log('Starting voice input with selected language:', selectedLanguage, '->', languageCode);
-      
+
       await speechService.startListening(
         async (result: SpeechRecognitionResult) => {
           // Only process final results - no interim processing
@@ -99,6 +147,7 @@ const VoiceOnlyScreen: React.FC = () => {
 
           setIsListening(false);
           setIsProcessing(true);
+          stopRecordingTimer();
 
           try {
             // Process with AI to get all three tone variations
@@ -110,11 +159,11 @@ const VoiceOnlyScreen: React.FC = () => {
             // Store the correction prompt for the popup (the one user selected)
             const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
             setCurrentPrompt(correctionPrompt);
-            
+
             const result = await geminiService.modelInstance.generateContent(prompt);
             const response = await result.response;
             const responseText = response.text();
-            
+
             console.log('Gemini AI response:', responseText);
 
             // Parse the JSON response
@@ -124,8 +173,19 @@ const VoiceOnlyScreen: React.FC = () => {
             }
 
             const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
-            setVoiceResponse(aiResponse);
             
+            // Debug: Log the response structure to identify missing fields
+            console.log('AI Response Structure:', {
+              hasTranslatedMeaning: !!aiResponse.translatedMeaning,
+              sourceLanguage: aiResponse.sourceLanguage,
+              selectedLanguage: selectedLanguage,
+              professionalTranslation: !!aiResponse.toneVariations.professional.translation,
+              friendlyTranslation: !!aiResponse.toneVariations.friendly.translation,
+              directTranslation: !!aiResponse.toneVariations.direct.translation,
+            });
+            
+            setVoiceResponse(aiResponse);
+
             // Automatically speak the professional version
             try {
               setIsSpeaking(true);
@@ -149,6 +209,7 @@ const VoiceOnlyScreen: React.FC = () => {
           console.error('Voice input error:', error);
           setIsListening(false);
           setIsProcessing(false);
+          stopRecordingTimer();
           setError('Voice input error. Please try again.');
         },
         {
@@ -161,6 +222,7 @@ const VoiceOnlyScreen: React.FC = () => {
     } catch (error) {
       console.error('Failed to start voice input:', error);
       setIsListening(false);
+      stopRecordingTimer();
       setError('Failed to start voice input. Please check your microphone permissions.');
     }
   };
@@ -181,9 +243,10 @@ const VoiceOnlyScreen: React.FC = () => {
     try {
       setIsCorrectingInput(true);
       setError(null);
-      
+      startRecordingTimer();
+
       const languageCode = SpeechRecognitionService.getLanguageCode(selectedLanguage);
-      
+
       await speechService.startListening(
         async (result) => {
           // Only process final results, no real-time display
@@ -199,25 +262,37 @@ const VoiceOnlyScreen: React.FC = () => {
           console.log('Input correction received:', transcript);
           setIsCorrectingInput(false);
           setIsProcessing(true);
+          stopRecordingTimer();
 
           try {
             // Reprocess with corrected input
             const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
             const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
             setCurrentPrompt(correctionPrompt);
-            
+
             const result = await geminiService.modelInstance.generateContent(prompt);
             const response = await result.response;
             const responseText = response.text();
-            
+
             const jsonMatch = responseText.match(/\{[\s\S]*\}/);
             if (!jsonMatch) {
               throw new Error('Invalid response format');
             }
 
             const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
-            setVoiceResponse(aiResponse);
             
+            // Debug: Log the response structure to identify missing fields
+            console.log('Correction AI Response Structure:', {
+              hasTranslatedMeaning: !!aiResponse.translatedMeaning,
+              sourceLanguage: aiResponse.sourceLanguage,
+              selectedLanguage: selectedLanguage,
+              professionalTranslation: !!aiResponse.toneVariations.professional.translation,
+              friendlyTranslation: !!aiResponse.toneVariations.friendly.translation,
+              directTranslation: !!aiResponse.toneVariations.direct.translation,
+            });
+            
+            setVoiceResponse(aiResponse);
+
             // Automatically speak the professional version
             try {
               setIsSpeaking(true);
@@ -239,6 +314,7 @@ const VoiceOnlyScreen: React.FC = () => {
         (error) => {
           console.error('Input correction voice error:', error);
           setIsCorrectingInput(false);
+          stopRecordingTimer();
           setError('Voice correction error. Please try again.');
         },
         {
@@ -251,13 +327,14 @@ const VoiceOnlyScreen: React.FC = () => {
     } catch (error) {
       console.error('Failed to start input correction:', error);
       setIsCorrectingInput(false);
+      stopRecordingTimer();
       setError('Failed to start correction. Please check your microphone permissions.');
     }
   };
 
   const playTone = async (toneType: 'professional' | 'friendly' | 'direct') => {
     if (!voiceResponse) return;
-    
+
     if (currentlyPlaying === toneType) {
       // Stop current playback
       voiceService.stop();
@@ -265,10 +342,10 @@ const VoiceOnlyScreen: React.FC = () => {
       setCurrentlyPlaying(null);
       return;
     }
-    
+
     // Stop any current playback
     voiceService.stop();
-    
+
     try {
       setIsSpeaking(true);
       setCurrentlyPlaying(toneType);
@@ -288,7 +365,7 @@ const VoiceOnlyScreen: React.FC = () => {
       <div className="absolute top-8 left-8 right-8 flex justify-between items-center z-10">
         <div className="flex items-center space-x-4 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1">
           <h1 className="text-2xl font-bold text-gray-800">Voice Coach</h1>
-          
+
           {/* AI Prompt Info Button */}
           <button
             onClick={() => setShowPromptPopup(true)}
@@ -302,7 +379,7 @@ const VoiceOnlyScreen: React.FC = () => {
             <Info className="w-5 h-5" />
           </button>
         </div>
-        
+
         {/* Language Selector */}
         <div className="flex items-center space-x-3 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1">
           <label className="text-sm font-medium text-gray-700">Input Language:</label>
@@ -341,17 +418,51 @@ const VoiceOnlyScreen: React.FC = () => {
               <Mic className="w-12 h-12 text-white" />
             )}
           </button>
-          
-          {/* Status indicator */}
+
+          {/* Status indicator and Timer */}
           {isListening && (
-            <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-red-500 text-sm font-medium">
-              Listening... (Complete your speech)
+            <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-black-500 text-xs font-small">
+              Listening...
             </div>
           )}
-          
+
+          {isCorrectingInput && (
+            <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-yellow-600 text-xs font-small">
+              Correcting...
+            </div>
+          )}
+
           {isProcessing && (
             <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-blue-500 text-sm font-medium">
               Processing...
+            </div>
+          )}
+
+          {/* Recording Timer */}
+          {(isListening || isCorrectingInput) && (
+            <div className={cn(
+              "absolute -top-16 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded-lg text-lg font-mono",
+              recordingTimer > maxRecordingTime - 10
+                ? "bg-red-600 bg-opacity-90 text-white animate-pulse"
+                : "bg-black bg-opacity-75 text-white"
+            )}>
+              <div className="flex items-center space-x-2">
+                <div className={cn(
+                  "w-2 h-2 rounded-full animate-pulse",
+                  recordingTimer > maxRecordingTime - 10 ? "bg-yellow-300" : "bg-red-500"
+                )}></div>
+                <span className={cn(
+                  recordingTimer > maxRecordingTime - 10 ? "font-bold text-xs" : "text-xs"
+                )}>
+                  {formatTime(recordingTimer)}
+                </span>
+              </div>
+
+              {recordingTimer > maxRecordingTime - 10 && (
+                <div className="text-xs text-center mt-1">
+                  Time limit approaching!
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -389,7 +500,7 @@ const VoiceOnlyScreen: React.FC = () => {
             </div>
 
             {/* Translation Cross-Check */}
-            {voiceResponse.translatedMeaning && voiceResponse.sourceLanguage !== 'English' && (
+            {voiceResponse.translatedMeaning && (
               <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <div className="flex items-center mb-2">
                   <div className="w-2 h-2 bg-yellow-400 rounded-full mr-2"></div>
@@ -399,7 +510,7 @@ const VoiceOnlyScreen: React.FC = () => {
                   <p className="text-sm text-gray-700">
                     <span className="font-medium">What AI understood:</span>
                   </p>
-                  
+
                   {/* Correction Microphone */}
                   <button
                     onClick={handleInputCorrection}
@@ -414,7 +525,7 @@ const VoiceOnlyScreen: React.FC = () => {
                     <Mic className="w-4 h-4" />
                   </button>
                 </div>
-                
+
                 <p className="text-gray-900 text-sm italic bg-white p-3 rounded border">
                   "{voiceResponse.translatedMeaning}"
                 </p>
@@ -432,7 +543,7 @@ const VoiceOnlyScreen: React.FC = () => {
 
             {/* Three Tone Variations */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-              
+
               {/* Professional Tone */}
               <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
                 <div className="flex items-center justify-between mb-3">
@@ -456,9 +567,9 @@ const VoiceOnlyScreen: React.FC = () => {
                 <p className="text-gray-900 text-sm leading-relaxed mb-3">
                   {voiceResponse.toneVariations.professional.text}
                 </p>
-                
+
                 {/* Translation in Input Language */}
-                {voiceResponse.toneVariations.professional.translation && voiceResponse.sourceLanguage !== 'English' && (
+                {voiceResponse.toneVariations.professional.translation && selectedLanguage !== 'en' && (
                   <div className="mb-3 p-2 bg-blue-100 rounded border-l-4 border-blue-400">
                     <p className="text-xs text-blue-700 font-medium mb-1">
                       {voiceResponse.sourceLanguage} Translation:
@@ -468,7 +579,7 @@ const VoiceOnlyScreen: React.FC = () => {
                     </p>
                   </div>
                 )}
-                
+
                 <p className="text-xs text-blue-600">
                   {voiceResponse.toneVariations.professional.explanation}
                 </p>
@@ -497,9 +608,9 @@ const VoiceOnlyScreen: React.FC = () => {
                 <p className="text-gray-900 text-sm leading-relaxed mb-3">
                   {voiceResponse.toneVariations.friendly.text}
                 </p>
-                
+
                 {/* Translation in Input Language */}
-                {voiceResponse.toneVariations.friendly.translation && voiceResponse.sourceLanguage !== 'English' && (
+                {voiceResponse.toneVariations.friendly.translation && selectedLanguage !== 'en' && (
                   <div className="mb-3 p-2 bg-green-100 rounded border-l-4 border-green-400">
                     <p className="text-xs text-green-700 font-medium mb-1">
                       {voiceResponse.sourceLanguage} Translation:
@@ -509,7 +620,7 @@ const VoiceOnlyScreen: React.FC = () => {
                     </p>
                   </div>
                 )}
-                
+
                 <p className="text-xs text-green-600">
                   {voiceResponse.toneVariations.friendly.explanation}
                 </p>
@@ -538,9 +649,9 @@ const VoiceOnlyScreen: React.FC = () => {
                 <p className="text-gray-900 text-sm leading-relaxed mb-3">
                   {voiceResponse.toneVariations.direct.text}
                 </p>
-                
+
                 {/* Translation in Input Language */}
-                {voiceResponse.toneVariations.direct.translation && voiceResponse.sourceLanguage !== 'English' && (
+                {voiceResponse.toneVariations.direct.translation && selectedLanguage !== 'en' && (
                   <div className="mb-3 p-2 bg-orange-100 rounded border-l-4 border-orange-400">
                     <p className="text-xs text-orange-700 font-medium mb-1">
                       {voiceResponse.sourceLanguage} Translation:
@@ -550,7 +661,7 @@ const VoiceOnlyScreen: React.FC = () => {
                     </p>
                   </div>
                 )}
-                
+
                 <p className="text-xs text-orange-600">
                   {voiceResponse.toneVariations.direct.explanation}
                 </p>
@@ -595,7 +706,7 @@ const VoiceOnlyScreen: React.FC = () => {
                 <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
-            
+
             {/* Content */}
             <div className="p-6 overflow-y-auto max-h-[60vh]">
               <div className="mb-4">
@@ -603,13 +714,13 @@ const VoiceOnlyScreen: React.FC = () => {
                   This is the exact prompt used to instruct the AI agent for processing your speech:
                 </p>
               </div>
-              
+
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                 <pre className="text-sm text-gray-800 whitespace-pre-wrap font-mono leading-relaxed">
                   {currentPrompt}
                 </pre>
               </div>
-              
+
               <div className="mt-4 text-xs text-gray-500">
                 <p>
                   💡 This prompt guides the AI to provide professional English corrections in three different tones:
@@ -617,7 +728,7 @@ const VoiceOnlyScreen: React.FC = () => {
                 </p>
               </div>
             </div>
-            
+
             {/* Footer */}
             <div className="flex justify-end p-6 border-t border-gray-200">
               <button
