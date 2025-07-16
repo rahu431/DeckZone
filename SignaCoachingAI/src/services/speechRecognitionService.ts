@@ -19,7 +19,7 @@ export class SpeechRecognitionService {
   private timeoutId: NodeJS.Timeout | null = null;
   private silenceTimeoutId: NodeJS.Timeout | null = null;
   private readonly LISTENING_TIMEOUT = 30000; // 30 seconds timeout
-  private readonly SILENCE_TIMEOUT = 5000; // 5 seconds of silence before stopping
+  private readonly SILENCE_TIMEOUT = 3000; // 3 seconds of silence before stopping
   private lastTranscript: string = '';
   private silenceDetected: boolean = false;
 
@@ -129,39 +129,23 @@ export class SpeechRecognitionService {
 
         console.log('Speech recognition result:', { transcript, confidence, isFinal: result.isFinal });
 
-        // Check if we have new content
-        if (transcript.trim() !== this.lastTranscript.trim()) {
-          this.lastTranscript = transcript;
-          this.silenceDetected = false;
-          
-          // Clear silence timeout since we have new speech
-          if (this.silenceTimeoutId) {
-            clearTimeout(this.silenceTimeoutId);
-            this.silenceTimeoutId = null;
-          }
-        }
+        // Update last transcript for tracking
+        this.lastTranscript = transcript;
 
-        // Always send interim results
+        // Send result
         resultCallback({
           transcript,
           confidence,
           isFinal: result.isFinal,
         });
 
-        // If it's a final result, start silence detection
+        // If it's a final result, start silence detection to wait for more speech
         if (result.isFinal && transcript.trim()) {
           console.log('Final result received, starting silence detection');
           this.silenceTimeoutId = setTimeout(() => {
             console.log('Silence timeout reached, stopping recognition');
             this.silenceDetected = true;
             this.stopListening();
-            
-            // Send final result
-            resultCallback({
-              transcript: this.lastTranscript,
-              confidence: confidence || 0.8,
-              isFinal: true,
-            });
           }, this.SILENCE_TIMEOUT);
         }
       };

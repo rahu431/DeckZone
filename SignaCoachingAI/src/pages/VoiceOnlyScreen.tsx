@@ -37,7 +37,6 @@ const VoiceOnlyScreen: React.FC = () => {
   const [showPromptPopup, setShowPromptPopup] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState<string>('');
   const [isCorrectingInput, setIsCorrectingInput] = useState(false);
-  const [correctionTranscript, setCorrectionTranscript] = useState<string>('');
 
   const speechService = SpeechRecognitionService.getInstance();
   const geminiService = GeminiService.getInstance();
@@ -85,15 +84,13 @@ const VoiceOnlyScreen: React.FC = () => {
       
       await speechService.startListening(
         async (result: SpeechRecognitionResult) => {
-          // Show interim results but only process final results
+          // Only process final results - no interim processing
           if (!result.isFinal) {
-            console.log('Interim result:', result.transcript);
             return;
           }
 
           const transcript = result.transcript.trim();
           if (!transcript) {
-            console.log('Empty transcript, ignoring');
             return;
           }
 
@@ -157,7 +154,7 @@ const VoiceOnlyScreen: React.FC = () => {
         {
           language: languageCode,
           continuous: true,
-          interimResults: true,
+          interimResults: false,
           maxAlternatives: 1,
         }
       );
@@ -173,7 +170,6 @@ const VoiceOnlyScreen: React.FC = () => {
       // Stop correction
       speechService.stopListening();
       setIsCorrectingInput(false);
-      setCorrectionTranscript('');
       return;
     }
 
@@ -185,26 +181,23 @@ const VoiceOnlyScreen: React.FC = () => {
     try {
       setIsCorrectingInput(true);
       setError(null);
-      setCorrectionTranscript('');
       
       const languageCode = SpeechRecognitionService.getLanguageCode(selectedLanguage);
       
       await speechService.startListening(
         async (result) => {
+          // Only process final results, no real-time display
           if (!result.isFinal) {
-            setCorrectionTranscript(result.transcript);
             return;
           }
 
           const transcript = result.transcript.trim();
           if (!transcript) {
-            setCorrectionTranscript('');
             return;
           }
 
           console.log('Input correction received:', transcript);
           setIsCorrectingInput(false);
-          setCorrectionTranscript('');
           setIsProcessing(true);
 
           try {
@@ -246,20 +239,18 @@ const VoiceOnlyScreen: React.FC = () => {
         (error) => {
           console.error('Input correction voice error:', error);
           setIsCorrectingInput(false);
-          setCorrectionTranscript('');
           setError('Voice correction error. Please try again.');
         },
         {
           language: languageCode,
           continuous: true,
-          interimResults: true,
+          interimResults: false, // No interim results
           maxAlternatives: 1,
         }
       );
     } catch (error) {
       console.error('Failed to start input correction:', error);
       setIsCorrectingInput(false);
-      setCorrectionTranscript('');
       setError('Failed to start correction. Please check your microphone permissions.');
     }
   };
@@ -354,7 +345,7 @@ const VoiceOnlyScreen: React.FC = () => {
           {/* Status indicator */}
           {isListening && (
             <div className="absolute -bottom-8 left-1/2 transform -translate-x-1/2 text-red-500 text-sm font-medium">
-              Listening...
+              Listening... (Complete your speech)
             </div>
           )}
           
@@ -372,7 +363,7 @@ const VoiceOnlyScreen: React.FC = () => {
             <p className="text-sm">
               Speaking in: {languageOptions.find(lang => lang.value === selectedLanguage)?.flag} {languageOptions.find(lang => lang.value === selectedLanguage)?.label}
             </p>
-            <p className="text-sm">Get instant professional English responses</p>
+            <p className="text-sm">Speak naturally and wait for processing after completion</p>
           </div>
         )}
 
@@ -424,14 +415,6 @@ const VoiceOnlyScreen: React.FC = () => {
                   </button>
                 </div>
                 
-                {/* Show correction transcript while listening */}
-                {isCorrectingInput && correctionTranscript && (
-                  <div className="mb-2 p-2 bg-yellow-50 border border-yellow-300 rounded text-sm">
-                    <span className="text-yellow-700">Correcting: </span>
-                    <span className="text-yellow-800 font-medium">{correctionTranscript}</span>
-                  </div>
-                )}
-                
                 <p className="text-gray-900 text-sm italic bg-white p-3 rounded border">
                   "{voiceResponse.translatedMeaning}"
                 </p>
@@ -439,6 +422,9 @@ const VoiceOnlyScreen: React.FC = () => {
                   ✓ Verify this matches your intended meaning in {voiceResponse.sourceLanguage}
                   {!isCorrectingInput && (
                     <span className="ml-2">• Click 🎤 to correct AI understanding</span>
+                  )}
+                  {isCorrectingInput && (
+                    <span className="ml-2">• Listening... Speak your correction</span>
                   )}
                 </p>
               </div>
