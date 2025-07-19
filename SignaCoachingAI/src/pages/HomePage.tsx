@@ -1,13 +1,15 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { MessageSquare, Mic, Target, BarChart3 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import Card from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import SentenceCorrector from '@/components/features/SentenceCorrector';
+import MicSensitivitySlider from '@/components/ui/MicSensitivitySlider';
 
 const HomePage: React.FC = () => {
   // Mock user ID for development
   const userId = 'dev-user-123';
+  const [micSensitivity, setMicSensitivity] = useState(50);
 
   const features = [
     {
@@ -89,8 +91,16 @@ const HomePage: React.FC = () => {
               </p>
             </div>
 
+            <div className="mb-8">
+              <MicSensitivitySlider
+                sensitivity={micSensitivity}
+                onSensitivityChange={setMicSensitivity}
+              />
+            </div>
+
             <SentenceCorrector
               userId={userId}
+              micSensitivity={micSensitivity} // Pass sensitivity to the component
               onCorrectionComplete={(correction) => {
                 console.log('Correction completed:', correction);
               }}

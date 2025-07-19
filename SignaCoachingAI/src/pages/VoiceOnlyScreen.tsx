@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, Info, X } from 'lucide-react';
 import { SpeechRecognitionService, SpeechRecognitionResult } from '@/services/speechRecognitionService';
+import { AzureSpeechService } from '@/services/azureSpeechService';
 import { GeminiService } from '@/services/geminiService';
 import { VoicePromptManager } from '@/services/voicePromptManager';
 import { PromptManager } from '@/services/promptManager';
@@ -40,12 +41,17 @@ const VoiceOnlyScreen: React.FC = () => {
   const [recordingTimer, setRecordingTimer] = useState<number>(0);
   const [timerInterval, setTimerInterval] = useState<NodeJS.Timeout | null>(null);
   const [maxRecordingTime] = useState<number>(60); // 60 seconds maximum listening time
+  const [activeSpeechService, setActiveSpeechService] = useState<'web' | 'azure'>('web');
+  const [silenceTimeout, setSilenceTimeout] = useState<NodeJS.Timeout | null>(null);
 
   const speechService = SpeechRecognitionService.getInstance();
+  const azureSpeechService = AzureSpeechService.getInstance();
   const geminiService = GeminiService.getInstance();
   const voicePromptManager = VoicePromptManager.getInstance();
   const promptManager = PromptManager.getInstance();
   const voiceService = VoiceService.getInstance();
+
+  const isMobile = useMemo(() => /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent), []);
 
   // Cleanup effect
   useEffect(() => {
@@ -53,8 +59,13 @@ const VoiceOnlyScreen: React.FC = () => {
       if (timerInterval) {
         clearInterval(timerInterval);
       }
+      if (silenceTimeout) {
+        clearTimeout(silenceTimeout);
+      }
+      speechService.stopListening();
+      azureSpeechService.stopListening();
     };
-  }, [timerInterval]);
+  }, [timerInterval, speechService, azureSpeechService, silenceTimeout]);
 
   // Timer management functions
   const startRecordingTimer = () => {
@@ -62,9 +73,12 @@ const VoiceOnlyScreen: React.FC = () => {
     const interval = setInterval(() => {
       setRecordingTimer(prev => {
         if (prev >= maxRecordingTime) {
-          // Maximum time reached, stop recording
           stopRecordingTimer();
-          speechService.stopListening();
+          if (activeSpeechService === 'web') {
+            speechService.stopListening();
+          } else {
+            azureSpeechService.stopListening();
+          }
           setIsListening(false);
           setIsCorrectingInput(false);
           setError('Recording time limit reached. Please try again.');
@@ -98,10 +112,34 @@ const VoiceOnlyScreen: React.FC = () => {
     { value: 'hi', label: 'Hindi', flag: '🇮🇳' },
   ];
 
+  const getLanguageCode = (lang: string) => {
+    const codes: { [key: string]: string } = {
+      en: 'en-US',
+      ta: 'ta-IN',
+      te: 'te-IN',
+      hi: 'hi-IN',
+    };
+    return codes[lang] || 'en-US';
+  };
+
+  const isLanguageSupported = (lang: string) => {
+    if (isMobile && lang !== 'en') {
+      return azureSpeechService.isConfigured();
+    }
+    return speechService.isSupported() && SpeechRecognitionService.isLanguageSupported(lang);
+  };
+
   const handleMicrophonePress = async () => {
     if (isListening) {
-      // Stop listening and clear session
-      speechService.stopListening();
+      if (silenceTimeout) {
+        clearTimeout(silenceTimeout);
+        setSilenceTimeout(null);
+      }
+      if (activeSpeechService === 'web') {
+        speechService.stopListening();
+      } else {
+        azureSpeechService.stopListening();
+      }
       voiceService.stop();
       setIsListening(false);
       setVoiceResponse(null);
@@ -111,12 +149,19 @@ const VoiceOnlyScreen: React.FC = () => {
       return;
     }
 
-    if (!speechService.isSupported()) {
-      setError('Voice input not supported in this browser');
+    if (!speechService.isSupported() && !azureSpeechService.isConfigured()) {
+      setError('Voice input not supported in this browser and Azure is not configured.');
       return;
     }
 
-    // Clear previous session
+    const useAzure = (isMobile && selectedLanguage !== 'en') || !SpeechRecognitionService.isLanguageSupported(selectedLanguage);
+    setActiveSpeechService(useAzure ? 'azure' : 'web');
+
+    if (useAzure && !azureSpeechService.isConfigured()) {
+      setError('This language is not supported on your device. Please use a desktop browser or switch to English.');
+      return;
+    }
+
     setVoiceResponse(null);
     setError(null);
     setIsProcessing(false);
@@ -126,99 +171,93 @@ const VoiceOnlyScreen: React.FC = () => {
       setIsListening(true);
       startRecordingTimer();
 
-      // Get language code for speech recognition
-      const languageCode = SpeechRecognitionService.getLanguageCode(selectedLanguage);
-      console.log('Starting voice input with selected language:', selectedLanguage, '->', languageCode);
+      if (silenceTimeout) clearTimeout(silenceTimeout);
+      const newSilenceTimeout = setTimeout(() => {
+        console.log('No speech detected for 5 seconds, stopping listening.');
+        if (activeSpeechService === 'web') {
+          speechService.stopListening();
+        } else {
+          azureSpeechService.stopListening();
+        }
+      }, 5000);
+      setSilenceTimeout(newSilenceTimeout);
 
-      await speechService.startListening(
-        async (result: SpeechRecognitionResult) => {
-          // Only process final results - no interim processing
-          if (!result.isFinal) {
-            return;
-          }
+      const languageCode = getLanguageCode(selectedLanguage);
+      console.log(`Starting voice input with ${useAzure ? 'Azure Speech' : 'Web Speech'} for language: ${languageCode}`);
 
-          const transcript = result.transcript.trim();
-          if (!transcript) {
-            return;
-          }
+      const handleResult = async (result: SpeechRecognitionResult) => {
+        if (silenceTimeout) {
+          clearTimeout(silenceTimeout);
+          setSilenceTimeout(null);
+        }
 
-          console.log('Final voice input received:', transcript);
-          console.log('Selected language:', selectedLanguage);
+        if (!result.isFinal) return;
+        const transcript = result.transcript.trim();
+        if (!transcript) return;
 
-          setIsListening(false);
-          setIsProcessing(true);
-          stopRecordingTimer();
+        console.log('Final voice input received:', transcript);
+        setIsListening(false);
+        setIsProcessing(true);
+        stopRecordingTimer();
+
+        try {
+          if (!geminiService.isConfigured()) throw new Error('Gemini AI not configured');
+
+          const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
+          const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
+          setCurrentPrompt(correctionPrompt);
+
+          const geminiResult = await geminiService.modelInstance.generateContent(prompt);
+          const response = await geminiResult.response;
+          const responseText = response.text();
+          console.log('Gemini AI response:', responseText);
+
+          const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) throw new Error('Invalid response format');
+
+          const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
+          setVoiceResponse(aiResponse);
 
           try {
-            // Process with AI to get all three tone variations
-            if (!geminiService.isConfigured()) {
-              throw new Error('Gemini AI not configured');
-            }
-
-            const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
-            // Store the correction prompt for the popup (the one user selected)
-            const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
-            setCurrentPrompt(correctionPrompt);
-
-            const result = await geminiService.modelInstance.generateContent(prompt);
-            const response = await result.response;
-            const responseText = response.text();
-
-            console.log('Gemini AI response:', responseText);
-
-            // Parse the JSON response
-            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-              throw new Error('Invalid response format');
-            }
-
-            const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
-            
-            // Debug: Log the response structure to identify missing fields
-            console.log('AI Response Structure:', {
-              hasTranslatedMeaning: !!aiResponse.translatedMeaning,
-              sourceLanguage: aiResponse.sourceLanguage,
-              selectedLanguage: selectedLanguage,
-              professionalTranslation: !!aiResponse.toneVariations.professional.translation,
-              friendlyTranslation: !!aiResponse.toneVariations.friendly.translation,
-              directTranslation: !!aiResponse.toneVariations.direct.translation,
-            });
-            
-            setVoiceResponse(aiResponse);
-
-            // Automatically speak the professional version
-            try {
-              setIsSpeaking(true);
-              setCurrentlyPlaying('professional');
-              await voiceService.speak(aiResponse.toneVariations.professional.text, 'en-US');
-            } catch (voiceError) {
-              console.log('Voice playback error (non-fatal):', voiceError);
-              // Don't show error to user for voice issues
-            } finally {
-              setIsSpeaking(false);
-              setCurrentlyPlaying(null);
-            }
-          } catch (error) {
-            console.error('Processing error:', error);
-            setError('Error processing your speech. Please try again.');
+            setIsSpeaking(true);
+            setCurrentlyPlaying('professional');
+            await voiceService.speak(aiResponse.toneVariations.professional.text, 'en-US');
+          } catch (voiceError) {
+            console.log('Voice playback error (non-fatal):', voiceError);
           } finally {
-            setIsProcessing(false);
+            setIsSpeaking(false);
+            setCurrentlyPlaying(null);
           }
-        },
-        (error: string) => {
-          console.error('Voice input error:', error);
-          setIsListening(false);
+        } catch (error) {
+          console.error('Processing error:', error);
+          setError('Error processing your speech. Please try again.');
+        } finally {
           setIsProcessing(false);
-          stopRecordingTimer();
-          setError('Voice input error. Please try again.');
-        },
-        {
+        }
+      };
+
+      const handleError = (error: string) => {
+        if (silenceTimeout) {
+          clearTimeout(silenceTimeout);
+          setSilenceTimeout(null);
+        }
+        console.error('Voice input error:', error);
+        setIsListening(false);
+        setIsProcessing(false);
+        stopRecordingTimer();
+        setError('Voice input error. Please try again.');
+      };
+
+      if (useAzure) {
+        await azureSpeechService.startListening(handleResult, handleError, { language: languageCode });
+      } else {
+        await speechService.startListening(handleResult, handleError, {
           language: languageCode,
           continuous: true,
-          interimResults: false,
+          interimResults: true,
           maxAlternatives: 1,
-        }
-      );
+        });
+      }
     } catch (error) {
       console.error('Failed to start voice input:', error);
       setIsListening(false);
@@ -229,14 +268,24 @@ const VoiceOnlyScreen: React.FC = () => {
 
   const handleInputCorrection = async () => {
     if (isCorrectingInput) {
-      // Stop correction
-      speechService.stopListening();
+      if (silenceTimeout) {
+        clearTimeout(silenceTimeout);
+        setSilenceTimeout(null);
+      }
+      if (activeSpeechService === 'web') {
+        speechService.stopListening();
+      } else {
+        azureSpeechService.stopListening();
+      }
       setIsCorrectingInput(false);
       return;
     }
 
-    if (!speechService.isSupported()) {
-      setError('Voice input not supported in this browser');
+    const useAzure = (isMobile && selectedLanguage !== 'en') || !SpeechRecognitionService.isLanguageSupported(selectedLanguage);
+    setActiveSpeechService(useAzure ? 'azure' : 'web');
+
+    if (useAzure && !azureSpeechService.isConfigured()) {
+      setError('This language is not supported on your device. Please use a desktop browser or switch to English.');
       return;
     }
 
@@ -245,85 +294,88 @@ const VoiceOnlyScreen: React.FC = () => {
       setError(null);
       startRecordingTimer();
 
-      const languageCode = SpeechRecognitionService.getLanguageCode(selectedLanguage);
+      if (silenceTimeout) clearTimeout(silenceTimeout);
+      const newSilenceTimeout = setTimeout(() => {
+        console.log('No speech detected for 5 seconds, stopping listening for correction.');
+        if (activeSpeechService === 'web') {
+          speechService.stopListening();
+        } else {
+          azureSpeechService.stopListening();
+        }
+      }, 5000);
+      setSilenceTimeout(newSilenceTimeout);
 
-      await speechService.startListening(
-        async (result) => {
-          // Only process final results, no real-time display
-          if (!result.isFinal) {
-            return;
-          }
+      const languageCode = getLanguageCode(selectedLanguage);
 
-          const transcript = result.transcript.trim();
-          if (!transcript) {
-            return;
-          }
+      const handleResult = async (result: SpeechRecognitionResult) => {
+        if (silenceTimeout) {
+          clearTimeout(silenceTimeout);
+          setSilenceTimeout(null);
+        }
 
-          console.log('Input correction received:', transcript);
-          setIsCorrectingInput(false);
-          setIsProcessing(true);
-          stopRecordingTimer();
+        if (!result.isFinal) return;
+        const transcript = result.transcript.trim();
+        if (!transcript) return;
+
+        console.log('Input correction received:', transcript);
+        setIsCorrectingInput(false);
+        setIsProcessing(true);
+        stopRecordingTimer();
+
+        try {
+          const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
+          const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
+          setCurrentPrompt(correctionPrompt);
+
+          const geminiResult = await geminiService.modelInstance.generateContent(prompt);
+          const response = await geminiResult.response;
+          const responseText = response.text();
+
+          const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) throw new Error('Invalid response format');
+
+          const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
+          setVoiceResponse(aiResponse);
 
           try {
-            // Reprocess with corrected input
-            const prompt = voicePromptManager.getVoiceCorrectionPrompt(transcript, selectedLanguage);
-            const correctionPrompt = promptManager.getCorrectionPrompt(transcript, selectedLanguage, 'professional');
-            setCurrentPrompt(correctionPrompt);
-
-            const result = await geminiService.modelInstance.generateContent(prompt);
-            const response = await result.response;
-            const responseText = response.text();
-
-            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-              throw new Error('Invalid response format');
-            }
-
-            const aiResponse: VoiceResponse = JSON.parse(jsonMatch[0]);
-            
-            // Debug: Log the response structure to identify missing fields
-            console.log('Correction AI Response Structure:', {
-              hasTranslatedMeaning: !!aiResponse.translatedMeaning,
-              sourceLanguage: aiResponse.sourceLanguage,
-              selectedLanguage: selectedLanguage,
-              professionalTranslation: !!aiResponse.toneVariations.professional.translation,
-              friendlyTranslation: !!aiResponse.toneVariations.friendly.translation,
-              directTranslation: !!aiResponse.toneVariations.direct.translation,
-            });
-            
-            setVoiceResponse(aiResponse);
-
-            // Automatically speak the professional version
-            try {
-              setIsSpeaking(true);
-              setCurrentlyPlaying('professional');
-              await voiceService.speak(aiResponse.toneVariations.professional.text, 'en-US');
-            } catch (voiceError) {
-              console.log('Voice playback error (non-fatal):', voiceError);
-            } finally {
-              setIsSpeaking(false);
-              setCurrentlyPlaying(null);
-            }
-          } catch (error) {
-            console.error('Input correction processing error:', error);
-            setError('Error processing corrected input. Please try again.');
+            setIsSpeaking(true);
+            setCurrentlyPlaying('professional');
+            await voiceService.speak(aiResponse.toneVariations.professional.text, 'en-US');
+          } catch (voiceError) {
+            console.log('Voice playback error (non-fatal):', voiceError);
           } finally {
-            setIsProcessing(false);
+            setIsSpeaking(false);
+            setCurrentlyPlaying(null);
           }
-        },
-        (error) => {
-          console.error('Input correction voice error:', error);
-          setIsCorrectingInput(false);
-          stopRecordingTimer();
-          setError('Voice correction error. Please try again.');
-        },
-        {
+        } catch (error) {
+          console.error('Input correction processing error:', error);
+          setError('Error processing corrected input. Please try again.');
+        } finally {
+          setIsProcessing(false);
+        }
+      };
+
+      const handleError = (error: string) => {
+        if (silenceTimeout) {
+          clearTimeout(silenceTimeout);
+          setSilenceTimeout(null);
+        }
+        console.error('Input correction voice error:', error);
+        setIsCorrectingInput(false);
+        stopRecordingTimer();
+        setError('Voice correction error. Please try again.');
+      };
+
+      if (useAzure) {
+        await azureSpeechService.startListening(handleResult, handleError, { language: languageCode });
+      } else {
+        await speechService.startListening(handleResult, handleError, {
           language: languageCode,
           continuous: true,
-          interimResults: false, // No interim results
+          interimResults: true,
           maxAlternatives: 1,
-        }
-      );
+        });
+      }
     } catch (error) {
       console.error('Failed to start input correction:', error);
       setIsCorrectingInput(false);
@@ -364,7 +416,7 @@ const VoiceOnlyScreen: React.FC = () => {
       {/* Header */}
       <div className="absolute top-8 left-8 right-8 flex justify-between items-center z-10">
         <div className="flex items-center space-x-4 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1">
-          <h1 className="text-2xl font-bold text-gray-800">Voice Coach</h1>
+          <h1 className="text-2xl font-bold text-gray-800">Speaking Coach</h1>
 
           {/* AI Prompt Info Button */}
           <button
@@ -474,6 +526,11 @@ const VoiceOnlyScreen: React.FC = () => {
             <p className="text-sm">
               Speaking in: {languageOptions.find(lang => lang.value === selectedLanguage)?.flag} {languageOptions.find(lang => lang.value === selectedLanguage)?.label}
             </p>
+            {!isLanguageSupported(selectedLanguage) && (
+              <p className="text-sm text-amber-600 mt-2">
+                ⚠️ This language may not be supported on your browser. For best results, use a modern desktop browser.
+              </p>
+            )}
             <p className="text-sm">Speak naturally and wait for processing after completion</p>
           </div>
         )}

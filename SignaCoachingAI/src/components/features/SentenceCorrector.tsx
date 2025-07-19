@@ -10,11 +10,13 @@ import { cn } from '@/utils/cn';
 
 interface SentenceCorrectorProps {
   userId: string;
+  micSensitivity: number;
   onCorrectionComplete?: (correction: SentenceCorrection) => void;
 }
 
 const SentenceCorrector: React.FC<SentenceCorrectorProps> = ({
   userId,
+  micSensitivity,
   onCorrectionComplete,
 }) => {
   const [inputText, setInputText] = useState('');
@@ -92,6 +94,7 @@ const SentenceCorrector: React.FC<SentenceCorrectorProps> = ({
           continuous: false,
           interimResults: true,
           maxAlternatives: 1,
+          micSensitivity: micSensitivity, // Pass sensitivity to the service
         }
       );
     } catch (error) {

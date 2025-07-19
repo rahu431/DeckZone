@@ -9,6 +9,7 @@ export interface SpeechRecognitionConfig {
   continuous: boolean;
   interimResults: boolean;
   maxAlternatives: number;
+  micSensitivity?: number; // Optional: microphone sensitivity (0-100)
 }
 
 export class SpeechRecognitionService {
@@ -308,6 +309,14 @@ export class SpeechRecognitionService {
 
   // Check if a language is supported for speech recognition
   static isLanguageSupported(language: string): boolean {
+    // On mobile, most browsers only support English reliably
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      // On mobile, only English is reliably supported
+      return language === 'en';
+    }
+    
     const supportedLanguages = [
       'en-US', 'te-IN', 'ta-IN', 'hi-IN', 'es-ES', 'fr-FR', 
       'de-DE', 'it-IT', 'pt-BR', 'ja-JP', 'ko-KR', 'zh-CN', 'ar-SA'
